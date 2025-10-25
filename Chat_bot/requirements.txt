@@ -1,3 +1,16 @@
+# Flask web framework
 Flask==2.3.3
+
+# Llama model inference
 llama-cpp-python==0.2.20
-jquery
+
+# Cortex SDK for memory management (local install)
+# Install with: pip install -e ../../
+# Or for production: pip install cortex-sdk
+
+# Cortex SDK dependencies (if installing standalone)
+sentence-transformers>=2.2.2
+torch>=2.0.0
+transformers>=4.30.0
+numpy>=1.24.0
+pydantic>=2.0.0

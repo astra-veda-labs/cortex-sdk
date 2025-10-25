@@ -12,21 +12,30 @@ A powerful Python SDK for intelligent memory management with support for short-t
 - **Easy-to-use API**: Simple, intuitive interfaces for memory operations
 - **CLI Support**: Command-line interface for memory management
 
-## AI Chat Bot
+## Test Application: AI Chat Bot
 
-The Cortex SDK now includes a powerful AI Chat Bot powered by Llama-2-7B, providing an intelligent conversational interface for your applications.
+The Cortex SDK includes a **test application** - an AI Chat Bot powered by Llama-2-7B that demonstrates Cortex's memory management capabilities.
+
+### Why This Matters
+This chatbot showcases how to integrate Cortex SDK into real applications, demonstrating:
+- **In-memory storage** for fast conversation access
+- **Semantic search** for context-aware responses
+- **Session management** with automatic cleanup
+- **Memory statistics** for monitoring
+- **Conversation summarization** using Cortex's built-in features
 
 ### Features
 - 🤖 **AI-Powered**: Uses Llama-2-7B model for intelligent responses
+- 🧠 **Cortex Integration**: Demonstrates real-world Cortex SDK usage
 - 💬 **Real-time Chat**: Interactive chat interface with typing indicators
 - 📱 **Modern UI**: Clean, responsive chat interface
-- 💾 **Session Management**: Maintains chat history per session
-- 🚀 **Easy Setup**: Automated model download and dependency installation
+- 💾 **Intelligent Memory**: Context-aware conversation with semantic search
+- 🚀 **Easy Setup**: Automated Cortex SDK and model installation
 
 ### Quick Start
 ```bash
 cd Chat_bot
-python setup.py
+python setup.py  # Installs Cortex SDK + dependencies + downloads model
 python start_chatbot.py
 ```
 
@@ -34,7 +43,9 @@ Access the chat bot at `http://localhost:5001`
 
 ![AI Assistant Chat Interface](Chat_bot/screenshot.png)
 
-For detailed setup instructions, see [Chat_bot/README.md](Chat_bot/README.md)
+**Note**: This is a demonstration of Cortex SDK's capabilities. The Cortex SDK itself is separate and can be used independently in any Python project.
+
+For detailed setup instructions and API documentation, see [Chat_bot/README.md](Chat_bot/README.md)
 
 ## Installation
 

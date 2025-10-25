@@ -185,6 +185,33 @@
             margin-bottom: 10px;
             color: #333;
         }
+        
+        .context-indicator {
+            font-size: 11px;
+            color: #888;
+            margin-top: 5px;
+            padding: 4px 8px;
+            background: #f0f0f0;
+            border-radius: 4px;
+            display: inline-block;
+        }
+        
+        .context-indicator.memory {
+            background: #e3f2fd;
+            color: #1976d2;
+        }
+        
+        .context-indicator.no-context {
+            background: #fff3e0;
+            color: #f57c00;
+        }
+        
+        .context-details {
+            font-size: 10px;
+            color: #999;
+            margin-top: 3px;
+            font-style: italic;
+        }
     </style>
 </head>
 <body>
@@ -260,7 +287,7 @@
                 success: function(response) {
                     hideTypingIndicator();
                     if (response.status === 'success') {
-                        addMessage('bot', response.response);
+                        addMessage('bot', response.response, response);
                     } else {
                         addMessage('bot', 'Sorry, I encountered an error: ' + response.error);
                     }
@@ -272,7 +299,7 @@
             });
         }
 
-        function addMessage(sender, message) {
+        function addMessage(sender, message, responseData) {
             const messagesDiv = document.getElementById('chatbot-messages');
             const messageDiv = document.createElement('div');
             messageDiv.className = 'chat-message ' + sender + '-message';
@@ -289,6 +316,32 @@
             
             bubbleDiv.appendChild(senderDiv);
             bubbleDiv.appendChild(messageTextDiv);
+            
+            // Add context indicator for bot messages
+            if (sender === 'bot' && responseData) {
+                const contextDiv = document.createElement('div');
+                const contextUsed = responseData.context_used || 0;
+                const memorySource = responseData.memory_source || 'unknown';
+                
+                if (contextUsed > 0) {
+                    contextDiv.className = 'context-indicator memory';
+                    contextDiv.innerHTML = `🧠 ${contextUsed} memory context${contextUsed > 1 ? 's' : ''} recalled`;
+                    
+                    // Add context details if available
+                    if (responseData.context_messages && responseData.context_messages.length > 0) {
+                        const detailsDiv = document.createElement('div');
+                        detailsDiv.className = 'context-details';
+                        detailsDiv.textContent = `From: ${responseData.context_messages.map(m => m.role).join(', ')}`;
+                        contextDiv.appendChild(detailsDiv);
+                    }
+                } else {
+                    contextDiv.className = 'context-indicator no-context';
+                    contextDiv.innerHTML = '💭 Fresh response (no prior context)';
+                }
+                
+                bubbleDiv.appendChild(contextDiv);
+            }
+            
             messageDiv.appendChild(bubbleDiv);
             messagesDiv.appendChild(messageDiv);
             messagesDiv.scrollTop = messagesDiv.scrollHeight;

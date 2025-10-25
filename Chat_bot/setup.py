@@ -10,11 +10,22 @@ import subprocess
 import shutil
 
 def install_dependencies():
-    """Install required Python packages"""
+    """Install required Python packages and Cortex SDK"""
     print("📦 Installing dependencies...")
     try:
+        # Install regular dependencies
         subprocess.run([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"], check=True)
         print("✅ Dependencies installed successfully")
+        
+        # Install Cortex SDK in development mode
+        cortex_path = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        if os.path.exists(os.path.join(cortex_path, "setup.py")):
+            print("📦 Installing Cortex SDK (local development mode)...")
+            subprocess.run([sys.executable, "-m", "pip", "install", "-e", cortex_path], check=True)
+            print("✅ Cortex SDK installed successfully")
+        else:
+            print("⚠️  Cortex SDK not found locally, skipping...")
+            
     except subprocess.CalledProcessError as e:
         print(f"❌ Error installing dependencies: {e}")
         return False

@@ -248,7 +248,7 @@ class MemoryManager:
                     result = MemorySearchResult(
                         memory=candidate,
                         similarity=similarity,
-                        rank=0  # Will be set after sorting
+                        rank=1  # Temporary rank, will be updated after sorting
                     )
                     results.append(result)
             

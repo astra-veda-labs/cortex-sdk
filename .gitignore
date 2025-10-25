@@ -50,3 +50,9 @@ logs/
 # Environment variables
 .env
 .env.local
+
+# Test outputs
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
