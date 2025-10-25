@@ -12,23 +12,22 @@ A modern AI assistant powered by Llama-2-7B with a beautiful web interface.
 
 ## Quick Start
 
-### Option 1: Automated Setup (Recommended)
+### Complete Setup (Recommended)
 ```bash
 python setup.py
 python start_chatbot.py
 ```
 
-### Option 2: Manual Setup
-```bash
-# Install dependencies
-pip install -r requirements.txt
+## Model Download
 
-# Download model (if not present)
-python download_model.py
+The setup script automatically tries multiple methods to get the model:
 
-# Start the chat bot
-python start_chatbot.py
-```
+1. **Copy from existing AIMap** (if available) - Fastest
+2. **Download from Hugging Face** - Automatic
+3. **Download using curl** - Fallback
+4. **Manual instructions** - If all else fails
+
+The model file (`llama-2-7b-chat-hf-q2_k.gguf`, 2.5GB) is required but not included in git due to size.
 
 ### Access the UI
 - Open your browser to `http://localhost:5001`
