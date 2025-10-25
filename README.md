@@ -12,6 +12,30 @@ A powerful Python SDK for intelligent memory management with support for short-t
 - **Easy-to-use API**: Simple, intuitive interfaces for memory operations
 - **CLI Support**: Command-line interface for memory management
 
+## AI Chat Bot
+
+The Cortex SDK now includes a powerful AI Chat Bot powered by Llama-2-7B, providing an intelligent conversational interface for your applications.
+
+### Features
+- 🤖 **AI-Powered**: Uses Llama-2-7B model for intelligent responses
+- 💬 **Real-time Chat**: Interactive chat interface with typing indicators
+- 📱 **Modern UI**: Clean, responsive chat interface
+- 💾 **Session Management**: Maintains chat history per session
+- 🚀 **Easy Setup**: Automated model download and dependency installation
+
+### Quick Start
+```bash
+cd Chat_bot
+python setup.py
+python start_chatbot.py
+```
+
+Access the chat bot at `http://localhost:5001`
+
+![AI Assistant Chat Interface](Chat_bot/screenshot.png)
+
+For detailed setup instructions, see [Chat_bot/README.md](Chat_bot/README.md)
+
 ## Installation
 
 ```bash
@@ -43,6 +67,8 @@ memory.forget(older_than_days=30, relevance_threshold=0.3)
 ```
 
 ## Architecture
+
+![Cortex SDK Architecture](docs/User_interaction-New_architecture.jpg)
 
 ```
 ┌─────────────────────────────────────────┐
