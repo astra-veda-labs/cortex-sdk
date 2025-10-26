@@ -153,6 +153,136 @@ class CortexChatBot:
             logger.error(f"Failed to store message in memory: {e}", exc_info=True)
             return ""
     
+    def _check_answer_cache(
+        self,
+        user_message: str,
+        session_id: str,
+        similarity_threshold: float = 0.90  # Lowered from 0.95 to 0.90 for more aggressive caching
+    ) -> Optional[Dict]:
+        """
+        Check if we have a cached answer for a similar question.
+        Uses AGGRESSIVE similarity threshold (0.90 = 90%) for faster responses.
+        
+        Args:
+            user_message: Current user question
+            session_id: Session identifier
+            similarity_threshold: Minimum similarity to use cached answer (default: 0.90)
+            
+        Returns:
+            Cached response dict if found, None otherwise
+        """
+        try:
+            if not self.use_cortex or self.memory is None:
+                return None
+            
+            # Search for similar user questions in recent history
+            results = self.memory.recall(
+                query=user_message,
+                memory_type=MemoryType.SHORT_TERM,
+                limit=10,  # Check last 10 messages
+                min_similarity=similarity_threshold,  # 90% similar = aggressive caching
+                tags=[f"session:{session_id}", "role:user", "chat"]
+            )
+            
+            # If we found a nearly identical question
+            for result in results:
+                if result.similarity >= similarity_threshold:
+                    # Get the answer that followed this question
+                    cached_question_id = result.memory.id
+                    
+                    # Find the assistant response that came after this question
+                    all_session_memories = self.sessions.get(session_id, [])
+                    
+                    try:
+                        question_index = all_session_memories.index(cached_question_id)
+                        # Check if there's an answer after this question
+                        if question_index + 1 < len(all_session_memories):
+                            answer_id = all_session_memories[question_index + 1]
+                            answer_memory = self.memory.get_memory(answer_id)
+                            
+                            if answer_memory and answer_memory.metadata.get("role") == "assistant":
+                                logger.info(f"Found cached answer (similarity: {result.similarity:.2%})")
+                                
+                                # Return cached response
+                                return {
+                                    "response": answer_memory.content,
+                                    "context_used": 1,
+                                    "context_messages": [{
+                                        "role": "user",
+                                        "content": result.memory.content
+                                    }],
+                                    "source": "cached_answer",
+                                    "cached": True,
+                                    "cache_similarity": result.similarity
+                                }
+                    except (ValueError, IndexError):
+                        continue
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error checking answer cache: {e}", exc_info=True)
+            return None
+    
+    def _is_topic_relevant(self, query: str, memory_content: str) -> bool:
+        """
+        Check if memory content is topically relevant to the query.
+        Prevents cross-topic contamination (e.g., bread vs kebabs).
+        
+        Args:
+            query: Current user query
+            memory_content: Content from memory to check
+            
+        Returns:
+            True if topically relevant, False otherwise
+        """
+        try:
+            # Extract key terms from query and memory
+            query_lower = query.lower()
+            memory_lower = memory_content.lower()
+            
+            # Define topic-specific keywords
+            cooking_topics = {
+                'bread': ['bread', 'loaf', 'yeast', 'dough', 'baking', 'oven'],
+                'kebabs': ['kebab', 'kebabs', 'skewer', 'skewers', 'grill', 'marinate'],
+                'chicken': ['chicken', 'poultry', 'breast', 'thigh', 'wing'],
+                'beef': ['beef', 'steak', 'meat', 'cow'],
+                'fish': ['fish', 'salmon', 'tuna', 'seafood']
+            }
+            
+            # Find the most relevant topic for the query
+            query_topic = None
+            for topic, keywords in cooking_topics.items():
+                if any(keyword in query_lower for keyword in keywords):
+                    query_topic = topic
+                    break
+            
+            # If no specific topic found, allow it (general conversation)
+            if query_topic is None:
+                return True
+            
+            # Check if memory content matches the same topic
+            topic_keywords = cooking_topics[query_topic]
+            memory_has_topic_keywords = any(keyword in memory_lower for keyword in topic_keywords)
+            
+            # If memory has the same topic keywords, it's relevant
+            if memory_has_topic_keywords:
+                return True
+            
+            # If memory has different topic keywords, it's not relevant
+            other_topics = [t for t in cooking_topics.keys() if t != query_topic]
+            for other_topic in other_topics:
+                other_keywords = cooking_topics[other_topic]
+                if any(keyword in memory_lower for keyword in other_keywords):
+                    return False  # Different topic, not relevant
+            
+            # If no specific cooking topics found, allow it
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error in topic relevance check: {e}", exc_info=True)
+            return True  # Default to allowing if check fails
+    
     def _recall_conversation_context(
         self,
         session_id: str,
@@ -160,7 +290,8 @@ class CortexChatBot:
         limit: int = None
     ) -> List[Dict[str, str]]:
         """
-        Recall conversation context from Cortex memory or fallback storage.
+        Recall conversation context from Cortex memory with smart filtering.
+        Uses HYBRID approach: semantic search + recency filtering
         
         Args:
             session_id: Session identifier
@@ -179,22 +310,51 @@ class CortexChatBot:
                 messages = self.sessions.get(session_id, [])
                 return messages[-limit:]
             
-            # Get session-specific memories from Cortex
+            # HYBRID APPROACH: Combine semantic search + recency
             if query:
-                # Semantic search for relevant context
-                results = self.memory.recall(
+                # Step 1: Get recent messages (baseline context)
+                memory_ids = self.sessions.get(session_id, [])
+                recent_count = min(5, limit)  # Last 5 messages as baseline
+                recent_memories = []
+                for mem_id in memory_ids[-recent_count:]:
+                    mem = self.memory.get_memory(mem_id)
+                    if mem and not mem.is_expired():
+                        recent_memories.append(mem)
+                
+                # Step 2: Semantic search for highly relevant older context
+                # Use VERY HIGH similarity threshold (0.85 = 85% similar) to be extremely selective
+                semantic_results = self.memory.recall(
                     query=query,
                     memory_type=MemoryType.SHORT_TERM,
-                    limit=limit,
-                    min_similarity=0.3,
+                    limit=limit * 2,  # Search wider, filter later
+                    min_similarity=0.85,  # VERY HIGH threshold: only extremely relevant matches
                     tags=[f"session:{session_id}", "chat"]
                 )
-                memories = [r.memory for r in results]
+                
+                # Step 3: Combine and deduplicate
+                all_memories = {}
+                
+                # Add recent messages (priority)
+                for mem in recent_memories:
+                    all_memories[mem.id] = mem
+                
+                # Add semantic matches if EXTREMELY relevant and not already included
+                for result in semantic_results:
+                    mem = result.memory
+                    if mem.id not in all_memories:
+                        # Only add if similarity is EXTREMELY high (85%+)
+                        if result.similarity >= 0.85:
+                            # Additional keyword filtering to prevent cross-topic contamination
+                            if self._is_topic_relevant(query, mem.content):
+                                all_memories[mem.id] = mem
+                
+                memories = list(all_memories.values())
+                
             else:
-                # Get recent messages from session
+                # No query: just get recent messages
                 memory_ids = self.sessions.get(session_id, [])
                 memories = []
-                for mem_id in memory_ids[-limit:]:  # Get most recent
+                for mem_id in memory_ids[-limit:]:
                     mem = self.memory.get_memory(mem_id)
                     if mem and not mem.is_expired():
                         memories.append(mem)
@@ -205,13 +365,15 @@ class CortexChatBot:
                 messages.append({
                     "role": mem.metadata.get("role", "user"),
                     "content": mem.content,
-                    "timestamp": mem.metadata.get("timestamp")
+                    "timestamp": mem.metadata.get("timestamp"),
+                    "memory_id": mem.id
                 })
             
-            # Sort by timestamp
+            # Sort by timestamp (chronological order)
             messages.sort(key=lambda x: x.get("timestamp", ""))
             
-            return messages
+            # Limit to max context
+            return messages[-limit:]
             
         except Exception as e:
             logger.error(f"Failed to recall conversation context: {e}", exc_info=True)
@@ -221,10 +383,13 @@ class CortexChatBot:
         self,
         user_message: str,
         session_id: str = "default",
-        use_semantic_context: bool = True
+        use_semantic_context: bool = True,
+        use_answer_cache: bool = True,
+        use_fresh_llm: bool = True
     ) -> Dict[str, any]:
         """
         Generate a response using Llama with Cortex memory context.
+        Includes SMART CACHING: Returns cached answer for highly similar questions.
         
         Args:
             user_message: User's input message
@@ -236,12 +401,21 @@ class CortexChatBot:
                 - response: Bot's response text
                 - context_used: Number of messages from memory
                 - context_messages: List of context messages used
-                - source: "cortex_memory" or "no_context"
+                - source: "cortex_memory", "cached_answer", or "no_context"
+                - cached: True if answer was from cache
         """
         try:
             # Ensure model is loaded
             if self.model is None:
                 self.load_model()
+            
+            # SMART CACHING: Check if we have a VERY similar recent question (if enabled)
+            # PRIORITY: Cache takes precedence over LLM when both are enabled
+            if use_answer_cache and self.use_cortex and self.memory:
+                cached_result = self._check_answer_cache(user_message, session_id)
+                if cached_result:
+                    logger.info(f"Using cached answer for similar question in session {session_id}")
+                    return cached_result
             
             # Store user message in memory
             self._store_message(
@@ -251,7 +425,7 @@ class CortexChatBot:
                 priority=MemoryPriority.MEDIUM
             )
             
-            # Recall conversation context
+            # Recall conversation context (if enabled)
             if use_semantic_context:
                 # Use semantic search to find relevant context
                 context_messages = self._recall_conversation_context(
@@ -260,7 +434,7 @@ class CortexChatBot:
                     limit=self.max_context_messages
                 )
             else:
-                # Get recent messages
+                # Get recent messages only
                 context_messages = self._recall_conversation_context(
                     session_id=session_id,
                     limit=self.max_context_messages
@@ -269,18 +443,21 @@ class CortexChatBot:
             # Build prompt with context
             prompt = self._build_prompt(context_messages, user_message)
             
-            # Generate response
-            logger.info(f"Generating response for session {session_id}")
-            response = self.model(
-                prompt,
-                max_tokens=512,
-                temperature=0.7,
-                top_p=0.9,
-                stop=["User:", "\n\n"],
-                echo=False
-            )
-            
-            bot_response = response['choices'][0]['text'].strip()
+            # Generate response (if fresh_llm is enabled)
+            if use_fresh_llm:
+                logger.info(f"Generating response for session {session_id}")
+                response = self.model(
+                    prompt,
+                    max_tokens=512,
+                    temperature=0.7,
+                    top_p=0.9,
+                    stop=["User:", "\n\n"],
+                    echo=False
+                )
+                bot_response = response['choices'][0]['text'].strip()
+            else:
+                # Return a simple response when LLM is disabled
+                bot_response = "I'm currently in a limited mode. Please enable the LLM to get a full response."
             
             # Store bot response in memory
             self._store_message(

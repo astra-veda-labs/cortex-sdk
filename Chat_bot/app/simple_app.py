@@ -69,6 +69,7 @@ def chat():
         data = request.json
         user_message = data.get('message', '').strip()
         session_id = data.get('session_id', 'default')
+        api_settings = data.get('api_settings', {})
         
         if not user_message:
             return jsonify({'status': 'error', 'error': 'No message provided'})
@@ -81,11 +82,18 @@ def chat():
                 'error': 'Chat bot not available. Please check server logs.'
             })
         
-        # Generate response with Cortex memory context
+        # Apply API settings
+        use_semantic_context = api_settings.get('memory_context', True)
+        use_answer_cache = api_settings.get('answer_cache', True)
+        use_fresh_llm = api_settings.get('fresh_llm', True)
+        
+        # Generate response with API-controlled features
         result = bot.generate_response(
             user_message=user_message,
             session_id=session_id,
-            use_semantic_context=True  # Use semantic search for relevant context
+            use_semantic_context=use_semantic_context,
+            use_answer_cache=use_answer_cache,
+            use_fresh_llm=use_fresh_llm
         )
         
         log.info(f"Chat response generated for session {session_id}")
