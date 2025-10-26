@@ -56,3 +56,23 @@ logs/
 .coverage
 htmlcov/
 .tox/
+
+# Database files
+chroma_db/
+*.db
+*.sqlite
+*.sqlite3
+
+# Temporary files
+cortex_files/
+*.tmp
+*.bak
+*~
+
+# Large model files
+*.gguf
+*.bin
+*.safetensors
+*.h5
+*.pkl
+*.joblib
