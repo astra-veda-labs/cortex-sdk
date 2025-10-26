@@ -299,6 +299,89 @@
             margin-left: 48px;
             line-height: 1.2;
         }
+        
+        /* Backend Configuration Styles */
+        .backend-config {
+            margin-top: 15px;
+            padding: 15px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+            text-align: left;
+        }
+        
+        .backend-config h3 {
+            font-size: 14px;
+            margin-bottom: 10px;
+            color: white;
+            text-align: center;
+        }
+        
+        .backend-switch {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 10px;
+        }
+        
+        .backend-option {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            cursor: pointer;
+            padding: 10px;
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.1);
+            transition: background 0.3s;
+            flex: 1;
+        }
+        
+        .backend-option:hover {
+            background: rgba(255, 255, 255, 0.2);
+        }
+        
+        .backend-option input[type="radio"] {
+            display: none;
+        }
+        
+        .backend-option input[type="radio"]:checked + .backend-label {
+            color: #4CAF50;
+            font-weight: 600;
+        }
+        
+        .backend-label {
+            font-size: 12px;
+            color: white;
+            font-weight: 500;
+            margin-bottom: 2px;
+        }
+        
+        .backend-option small {
+            font-size: 10px;
+            color: rgba(255, 255, 255, 0.7);
+            text-align: center;
+        }
+        
+        .switch-btn {
+            background: #4CAF50;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.3s;
+            margin-right: 10px;
+        }
+        
+        .switch-btn:hover {
+            background: #45a049;
+        }
+        
+        .backend-status {
+            font-size: 11px;
+            color: rgba(255, 255, 255, 0.8);
+            font-weight: 500;
+        }
     </style>
 </head>
 <body>
@@ -306,6 +389,25 @@
         <div class="chat-header">
             <h1>🤖 AI Assistant</h1>
             <p>Powered by Llama-2-7B with Cortex SDK</p>
+            
+            <!-- Backend Configuration -->
+            <div class="backend-config">
+                <h3>🔧 Backend Configuration</h3>
+                <div class="backend-switch">
+                    <label class="backend-option">
+                        <input type="radio" name="backend" value="in_memory" id="in_memory_backend">
+                        <span class="backend-label">In-Memory</span>
+                        <small>Fast, temporary storage</small>
+                    </label>
+                    <label class="backend-option">
+                        <input type="radio" name="backend" value="chroma" id="chroma_backend">
+                        <span class="backend-label">Chroma</span>
+                        <small>Persistent vector database</small>
+                    </label>
+                </div>
+                <button onclick="switchBackend()" class="switch-btn">Switch Backend</button>
+                <span id="backend-status" class="backend-status">Loading...</span>
+            </div>
             
             <!-- API Control Panel -->
             <div class="api-controls">
@@ -521,6 +623,69 @@
                 typingDiv.remove();
             }
         }
+        
+        // Backend switching functions
+        function switchBackend() {
+            const selectedBackend = document.querySelector('input[name="backend"]:checked');
+            if (!selectedBackend) {
+                alert('Please select a backend');
+                return;
+            }
+            
+            const backend = selectedBackend.value;
+            const statusElement = document.getElementById('backend-status');
+            statusElement.textContent = 'Switching...';
+            
+            // Send switch request
+            fetch('/config/switch', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    backend: backend,
+                    config: {}
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    statusElement.textContent = `Switched to ${backend}`;
+                    statusElement.style.color = '#4CAF50';
+                } else {
+                    statusElement.textContent = `Error: ${data.error}`;
+                    statusElement.style.color = '#f44336';
+                }
+            })
+            .catch(error => {
+                statusElement.textContent = `Error: ${error.message}`;
+                statusElement.style.color = '#f44336';
+            });
+        }
+        
+        function loadBackendConfig() {
+            fetch('/config/status')
+            .then(response => response.json())
+            .then(data => {
+                const currentBackend = data.current_backend;
+                const statusElement = document.getElementById('backend-status');
+                
+                // Set the correct radio button
+                document.getElementById(`${currentBackend}_backend`).checked = true;
+                
+                // Update status
+                statusElement.textContent = `Current: ${currentBackend}`;
+                statusElement.style.color = '#4CAF50';
+            })
+            .catch(error => {
+                const statusElement = document.getElementById('backend-status');
+                statusElement.textContent = 'Error loading config';
+                statusElement.style.color = '#f44336';
+            });
+        }
+        
+        // Load backend configuration on page load
+        document.addEventListener('DOMContentLoaded', loadBackendConfig);
     </script>
 </body>
 </html>

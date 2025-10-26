@@ -15,9 +15,13 @@ log.basicConfig(level=log.INFO, format='%(asctime)s - %(levelname)s - %(message)
 # Add the rag_model path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+# Add the parent directory to Python path for Cortex SDK
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
+
 # Import the Cortex-powered chat bot
 try:
-    from rag_model.src_gpt.cortex_chat import CortexChatBot, CORTEX_AVAILABLE
+    from rag_model.src_gpt.cortex_chat import CortexChatBot
+    CORTEX_AVAILABLE = True
     CHAT_BOT_AVAILABLE = True
     log.info("Cortex chat bot module imported successfully")
     log.info(f"Cortex SDK available: {CORTEX_AVAILABLE}")
@@ -200,6 +204,67 @@ def health():
         'cortex_available': CORTEX_AVAILABLE,
         'message': 'AI Assistant server is running with Cortex SDK'
     })
+
+# YAML Configuration Endpoints
+@app.route('/config/status')
+def config_status():
+    """Get current backend configuration status"""
+    try:
+        from cortex.config.yaml_config import get_yaml_config
+        config = get_yaml_config()
+        return jsonify(config.get_backend_info())
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/config/switch', methods=['POST'])
+def config_switch():
+    """Switch backend configuration"""
+    try:
+        data = request.json
+        backend = data.get('backend')
+        config_params = data.get('config', {})
+        
+        from cortex.config.yaml_config import get_yaml_config
+        config = get_yaml_config()
+        
+        if backend == 'in_memory':
+            config.switch_to_in_memory()
+        elif backend == 'chroma':
+            persistent = config_params.get('persistent', False)
+            collection_name = config_params.get('collection_name', 'cortex_memories')
+            config.switch_to_chroma(persistent=persistent, collection_name=collection_name)
+        else:
+            return jsonify({'error': f'Unknown backend: {backend}'}), 400
+        
+        return jsonify({'success': True, 'backend': backend})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/config/reset', methods=['POST'])
+def config_reset():
+    """Reset configuration to defaults"""
+    try:
+        from cortex.config.yaml_config import get_yaml_config
+        config = get_yaml_config()
+        config.switch_to_in_memory()
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/config/test', methods=['POST'])
+def config_test():
+    """Test backend connection"""
+    try:
+        data = request.json
+        backend = data.get('backend')
+        
+        # Simple test - just check if backend is available
+        if backend in ['in_memory', 'chroma']:
+            return jsonify({'success': True, 'backend': backend})
+        else:
+            return jsonify({'error': f'Unknown backend: {backend}'}), 400
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
     try:

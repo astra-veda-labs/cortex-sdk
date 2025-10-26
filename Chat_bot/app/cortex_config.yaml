@@ -1,0 +1,14 @@
+backend: chroma
+backends:
+  chroma:
+    config:
+      collection_name: cortex_memories
+      embedding_model: sentence-transformers/all-MiniLM-L6-v2
+      persistent: false
+      similarity_threshold: 0.5
+    enabled: true
+  in_memory:
+    config:
+      capacity: 1000
+      persistent: false
+    enabled: false
