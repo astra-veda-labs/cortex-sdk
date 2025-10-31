@@ -596,13 +596,15 @@ class CortexChatBot:
             # Sort by timestamp (chronological order)
             messages.sort(key=lambda x: x.get("timestamp", ""))
             
-            # Summarize old messages if we have too many
-            if len(messages) > limit and self.enable_summarization and self.summarizer:
+            # ALWAYS summarize old conversations - keep only last 2 messages in full detail
+            # This ensures the LLM gets key facts summarized instead of full conversation history
+            if len(messages) > 2:
                 try:
                     # Split into recent (keep full) and old (summarize)
-                    recent_count = min(limit // 2, 3)  # Keep last 3 messages full
-                    old_messages = messages[:-recent_count]
-                    recent_messages = messages[-recent_count:]
+                    # Always keep only last 2 messages in full, summarize everything before
+                    recent_count = min(2, len(messages) - 1)  # Keep last 2 messages full
+                    old_messages = messages[:-recent_count] if recent_count > 0 else messages[:-1]
+                    recent_messages = messages[-recent_count:] if recent_count > 0 else [messages[-1]]
                     
                     if len(old_messages) > 0:
                         # Create a conversation summary from old messages
@@ -611,35 +613,79 @@ class CortexChatBot:
                             for msg in old_messages
                         ])
                         
-                        # Summarize if conversation is long
-                        if len(conversation_text) > 200:
-                            logger.info(f"Summarizing {len(old_messages)} old messages into summary")
-                            summary = self.summarizer(
-                                conversation_text,
-                                max_length=150,
-                                min_length=50,
-                                do_sample=False
-                            )[0]['summary_text']
+                        # Extract key facts from old messages - intelligent summarization
+                        logger.info(f"📝 Summarizing {len(old_messages)} old messages into concise summary")
+                        
+                        # Use model summarization if available, otherwise use extractive summarization
+                        summary_text = None
+                        if self.enable_summarization and self.summarizer:
+                            try:
+                                summary = self.summarizer(
+                                    conversation_text,
+                                    max_length=200,  # Longer summary to capture key facts
+                                    min_length=30,   # Shorter minimum
+                                    do_sample=False
+                                )[0]['summary_text']
+                                summary_text = summary
+                                logger.info(f"✅ Model summarization: '{summary[:100]}...'")
+                            except Exception as e:
+                                logger.warning(f"Model summarization failed: {e}, using extractive summary")
+                        
+                        # Fallback to intelligent extractive summarization
+                        if not summary_text:
+                            key_facts = []
+                            # Extract important information from old messages
+                            for msg in old_messages:
+                                content = msg['content']
+                                content_lower = content.lower()
+                                
+                                # Extract names
+                                if 'name is' in content_lower or 'my name' in content_lower or 'i am' in content_lower:
+                                    key_facts.append(content)
+                                # Extract preferences, important statements
+                                elif msg['role'] == 'user' and (len(content) < 150 or any(word in content_lower for word in ['like', 'prefer', 'want', 'need', 'important', 'favorite'])):
+                                    key_facts.append(content)
+                                # Extract assistant responses that contain important information
+                                elif msg['role'] == 'assistant' and len(content) < 100:
+                                    # Short assistant responses might be key facts
+                                    key_facts.append(content)
                             
-                            # Add summary as a single message
+                            # If we found key facts, join them
+                            if key_facts:
+                                summary_text = ". ".join(key_facts[:5])  # Max 5 key facts
+                                logger.info(f"✅ Extractive summary: '{summary_text[:100]}...'")
+                            else:
+                                # Create a general summary
+                                user_msgs = [m['content'] for m in old_messages if m['role'] == 'user']
+                                assistant_msgs = [m['content'] for m in old_messages if m['role'] == 'assistant']
+                                summary_parts = []
+                                if user_msgs:
+                                    summary_parts.append(f"User discussed: {user_msgs[0][:80]}{'...' if len(user_msgs[0]) > 80 else ''}")
+                                if assistant_msgs:
+                                    summary_parts.append(f"Assistant responded about: {assistant_msgs[0][:80]}{'...' if len(assistant_msgs[0]) > 80 else ''}")
+                                summary_text = ". ".join(summary_parts) if summary_parts else "Previous conversation occurred"
+                                logger.info(f"✅ General summary: '{summary_text[:100]}...'")
+                        
+                        # Add summary as a single message with key facts
+                        if summary_text:
                             summary_message = {
                                 "role": "system",
-                                "content": f"Previous conversation summary: {summary}",
-                                "timestamp": old_messages[-1].get("timestamp", ""),
-                                "memory_id": "summary"
+                                "content": f"Key facts from previous conversation: {summary_text}",
+                                "timestamp": old_messages[-1].get("timestamp", "") if old_messages else "",
+                                "memory_id": "summary",
+                                "is_summary": True
                             }
                             messages = [summary_message] + recent_messages
-                            logger.info(f"Summarized {len(old_messages)} messages, kept {len(recent_messages)} recent")
+                            logger.info(f"✅ Summarized {len(old_messages)} messages, kept {len(recent_messages)} recent messages")
                         else:
-                            # Keep all if conversation is short
-                            messages = messages[-limit:]
+                            messages = recent_messages
                     else:
-                        messages = messages[-limit:]
+                        messages = recent_messages if recent_messages else messages[-limit:]
                 except Exception as e:
                     logger.warning(f"Failed to summarize context: {e}. Using full context.")
                     messages = messages[-limit:]
-            else:
-                # Limit to max context
+            elif len(messages) > limit:
+                # If summarization not available, just limit
                 messages = messages[-limit:]
             
             return messages
@@ -859,9 +905,10 @@ class CortexChatBot:
     ) -> str:
         """
         Build a prompt with conversation context.
+        Summaries are included as system messages with key facts.
         
         Args:
-            context_messages: Previous conversation messages
+            context_messages: Previous conversation messages (may include summaries)
             current_message: Current user message
             
         Returns:
@@ -874,11 +921,31 @@ class CortexChatBot:
         
         # Add conversation context
         if context_messages:
-            prompt += "Previous conversation:\n"
-            for msg in context_messages:
-                role = "User" if msg["role"] == "user" else "Assistant"
-                prompt += f"{role}: {msg['content']}\n"
-            prompt += "\n"
+            # Check if there's a summary
+            has_summary = any(msg.get('is_summary', False) for msg in context_messages)
+            
+            if has_summary:
+                # Include summary as key facts
+                for msg in context_messages:
+                    if msg.get('is_summary', False):
+                        prompt += f"{msg['content']}\n\n"
+                        break
+                
+                # Add recent conversation
+                recent_messages = [msg for msg in context_messages if not msg.get('is_summary', False)]
+                if recent_messages:
+                    prompt += "Recent conversation:\n"
+                    for msg in recent_messages:
+                        role = "User" if msg["role"] == "user" else "Assistant"
+                        prompt += f"{role}: {msg['content']}\n"
+                    prompt += "\n"
+            else:
+                # No summary, show all context as conversation
+                prompt += "Previous conversation:\n"
+                for msg in context_messages:
+                    role = "User" if msg["role"] == "user" else ("Assistant" if msg["role"] == "assistant" else "System")
+                    prompt += f"{role}: {msg['content']}\n"
+                prompt += "\n"
         
         # Add current message
         prompt += f"User: {current_message}\nAssistant:"
