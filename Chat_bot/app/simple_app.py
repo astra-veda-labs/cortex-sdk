@@ -109,10 +109,14 @@ def chat():
             'cortex_enabled': bot.use_cortex,
             'context_used': result.get('context_used', 0),
             'memory_source': result.get('source', 'unknown'),
+            'cached': result.get('cached', False),
+            'cache_similarity': result.get('cache_similarity', 0),
             'context_messages': [
                 {'role': msg['role'], 'content': msg['content'][:100] + '...' if len(msg['content']) > 100 else msg['content']}
                 for msg in result.get('context_messages', [])
-            ]
+            ],
+            'prompt_sent_to_llm': result.get('prompt_sent_to_llm'),
+            'user_message': result.get('user_message', user_message)
         })
         
     except Exception as e:

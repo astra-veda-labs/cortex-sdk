@@ -29,7 +29,27 @@ except ImportError as e:
 
 from llama_cpp import Llama
 
+# Import summarization libraries
+try:
+    from transformers import pipeline
+    SUMMARIZATION_AVAILABLE = True
+except ImportError:
+    SUMMARIZATION_AVAILABLE = False
+
+try:
+    from sentence_transformers import SentenceTransformer
+    SEMANTIC_SIMILARITY_AVAILABLE = True
+except ImportError:
+    SEMANTIC_SIMILARITY_AVAILABLE = False
+
+# Configure logger to show INFO level messages
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
 
 
 class CortexChatBot:
@@ -43,7 +63,9 @@ class CortexChatBot:
         model_path: str,
         memory_config: Optional['MemoryConfig'] = None,
         max_context_messages: int = 10,
-        use_cortex: bool = True
+        use_cortex: bool = True,
+        enable_summarization: bool = True,
+        topic_relevance_threshold: float = 0.3  # Semantic similarity threshold for topic relevance
     ):
         """
         Initialize Cortex-powered chatbot.
@@ -53,11 +75,38 @@ class CortexChatBot:
             memory_config: Cortex memory configuration (optional)
             max_context_messages: Maximum messages to include in context
             use_cortex: Whether to use Cortex SDK for memory management
+            enable_summarization: Whether to summarize old context
+            topic_relevance_threshold: Minimum semantic similarity for topic relevance
         """
         self.model_path = model_path
         self.model = None
         self.max_context_messages = max_context_messages
         self.use_cortex = use_cortex and CORTEX_AVAILABLE
+        self.enable_summarization = enable_summarization
+        self.topic_relevance_threshold = topic_relevance_threshold
+        
+        # Initialize summarizer if available
+        self.summarizer = None
+        if enable_summarization and SUMMARIZATION_AVAILABLE:
+            try:
+                # Use a lightweight summarization model
+                logger.info("Initializing summarization model...")
+                self.summarizer = pipeline("summarization", model="facebook/bart-large-cnn", device=-1)
+                logger.info("Summarization model loaded successfully")
+            except Exception as e:
+                logger.warning(f"Failed to load summarization model: {e}. Continuing without summarization.")
+                self.summarizer = None
+        
+        # Initialize semantic similarity model for topic relevance
+        self.semantic_model = None
+        if SEMANTIC_SIMILARITY_AVAILABLE:
+            try:
+                logger.info("Loading semantic similarity model for topic filtering...")
+                self.semantic_model = SentenceTransformer('all-MiniLM-L6-v2')
+                logger.info("Semantic similarity model loaded successfully")
+            except Exception as e:
+                logger.warning(f"Failed to load semantic similarity model: {e}")
+                self.semantic_model = None
         
         # Initialize Cortex Memory Manager if available
         if self.use_cortex:
@@ -75,6 +124,10 @@ class CortexChatBot:
         
         # Session storage for quick access
         self.sessions: Dict[str, List[str]] = {}  # session_id -> [memory_ids]
+        
+        # Topic tracking per session - track current topic to maintain context chains
+        self.session_topics: Dict[str, str] = {}  # session_id -> current_topic
+        self.topic_contexts: Dict[str, Dict[str, List[str]]] = {}  # session_id -> {topic: [memory_ids]}
     
     def load_model(self):
         """Load the Llama model."""
@@ -224,10 +277,87 @@ class CortexChatBot:
             logger.error(f"Error checking answer cache: {e}", exc_info=True)
             return None
     
+    def _detect_topic(self, text: str) -> str:
+        """
+        Detect the topic of a conversation using semantic embeddings.
+        
+        Args:
+            text: Text to analyze
+            
+        Returns:
+            Topic identifier (simplified)
+        """
+        try:
+            if self.semantic_model:
+                # Use semantic clustering to detect topic
+                # For simplicity, we'll use keyword-based detection with semantic enhancement
+                text_lower = text.lower()
+                
+                # Define topic keywords
+                topic_keywords = {
+                    'cars': ['car', 'cars', 'vehicle', 'vehicles', 'automobile', 'buying car', 'car price', 'honda', 'toyota', 'bmw', 'mercedes'],
+                    'food': ['food', 'cooking', 'recipe', 'ingredient', 'dish', 'meal', 'pickle', 'tomato', 'curry', 'rice', 'chicken', 'beef'],
+                    'coding': ['code', 'programming', 'python', 'function', 'algorithm', 'palindrome', 'software', 'developer', 'debug'],
+                    'general': []  # Default
+                }
+                
+                # Find best matching topic
+                best_match = 'general'
+                best_score = 0
+                
+                for topic, keywords in topic_keywords.items():
+                    if topic == 'general':
+                        continue
+                    matches = sum(1 for keyword in keywords if keyword in text_lower)
+                    score = matches / len(keywords) if keywords else 0
+                    if score > best_score:
+                        best_score = score
+                        best_match = topic
+                
+                # If semantic model available, use it for better detection
+                if best_score < 0.3:  # Low confidence
+                    # Use semantic similarity to check against known topics
+                    topic_descriptions = {
+                        'cars': 'automobiles vehicles cars buying selling',
+                        'food': 'cooking recipes food ingredients meals',
+                        'coding': 'programming code algorithms software development'
+                    }
+                    
+                    best_semantic_match = 'general'
+                    best_semantic_score = 0
+                    for topic, desc in topic_descriptions.items():
+                        query_emb = self.semantic_model.encode(text, convert_to_tensor=False)
+                        desc_emb = self.semantic_model.encode(desc, convert_to_tensor=False)
+                        import numpy as np
+                        similarity = np.dot(query_emb, desc_emb) / (
+                            np.linalg.norm(query_emb) * np.linalg.norm(desc_emb)
+                        )
+                        if similarity > best_semantic_score:
+                            best_semantic_score = similarity
+                            best_semantic_match = topic
+                    
+                    if best_semantic_score > 0.4:  # Reasonable threshold
+                        best_match = best_semantic_match
+                
+                return best_match
+            else:
+                # Fallback to simple keyword matching
+                text_lower = text.lower()
+                if any(word in text_lower for word in ['car', 'vehicle', 'automobile', 'buy', 'price']):
+                    return 'cars'
+                elif any(word in text_lower for word in ['food', 'cook', 'recipe', 'ingredient', 'pickle']):
+                    return 'food'
+                elif any(word in text_lower for word in ['code', 'program', 'algorithm', 'palindrome']):
+                    return 'coding'
+                return 'general'
+        except Exception as e:
+            logger.warning(f"Error detecting topic: {e}")
+            return 'general'
+    
     def _is_topic_relevant(self, query: str, memory_content: str) -> bool:
         """
-        Check if memory content is topically relevant to the query.
-        Prevents cross-topic contamination (e.g., bread vs kebabs).
+        Check if memory content is topically relevant to the query using semantic similarity.
+        Prevents cross-topic contamination (e.g., pickle vs palindrome code).
         
         Args:
             query: Current user query
@@ -237,47 +367,43 @@ class CortexChatBot:
             True if topically relevant, False otherwise
         """
         try:
-            # Extract key terms from query and memory
+            # Use semantic similarity if available (much better than keyword matching)
+            if self.semantic_model:
+                try:
+                    # Get embeddings for query and memory content
+                    query_embedding = self.semantic_model.encode(query, convert_to_tensor=False)
+                    memory_embedding = self.semantic_model.encode(memory_content, convert_to_tensor=False)
+                    
+                    # Calculate cosine similarity
+                    import numpy as np
+                    similarity = np.dot(query_embedding, memory_embedding) / (
+                        np.linalg.norm(query_embedding) * np.linalg.norm(memory_embedding)
+                    )
+                    
+                    is_relevant = similarity >= self.topic_relevance_threshold
+                    logger.debug(f"Topic relevance: {similarity:.3f} (threshold: {self.topic_relevance_threshold}) - {'RELEVANT' if is_relevant else 'IRRELEVANT'}")
+                    return is_relevant
+                except Exception as e:
+                    logger.warning(f"Error in semantic similarity check: {e}, falling back to keyword matching")
+            
+            # Fallback to keyword-based matching (simpler but less accurate)
             query_lower = query.lower()
             memory_lower = memory_content.lower()
             
-            # Define topic-specific keywords
-            cooking_topics = {
-                'bread': ['bread', 'loaf', 'yeast', 'dough', 'baking', 'oven'],
-                'kebabs': ['kebab', 'kebabs', 'skewer', 'skewers', 'grill', 'marinate'],
-                'chicken': ['chicken', 'poultry', 'breast', 'thigh', 'wing'],
-                'beef': ['beef', 'steak', 'meat', 'cow'],
-                'fish': ['fish', 'salmon', 'tuna', 'seafood']
-            }
+            # Extract key terms from query (2+ character words)
+            query_terms = set(word for word in query_lower.split() if len(word) >= 3)
+            memory_terms = set(word for word in memory_lower.split() if len(word) >= 3)
             
-            # Find the most relevant topic for the query
-            query_topic = None
-            for topic, keywords in cooking_topics.items():
-                if any(keyword in query_lower for keyword in keywords):
-                    query_topic = topic
-                    break
+            # Calculate overlap
+            common_terms = query_terms & memory_terms
+            if len(query_terms) == 0:
+                return True  # Empty query, allow all
             
-            # If no specific topic found, allow it (general conversation)
-            if query_topic is None:
-                return True
+            overlap_ratio = len(common_terms) / len(query_terms)
+            is_relevant = overlap_ratio >= 0.2  # At least 20% term overlap
             
-            # Check if memory content matches the same topic
-            topic_keywords = cooking_topics[query_topic]
-            memory_has_topic_keywords = any(keyword in memory_lower for keyword in topic_keywords)
-            
-            # If memory has the same topic keywords, it's relevant
-            if memory_has_topic_keywords:
-                return True
-            
-            # If memory has different topic keywords, it's not relevant
-            other_topics = [t for t in cooking_topics.keys() if t != query_topic]
-            for other_topic in other_topics:
-                other_keywords = cooking_topics[other_topic]
-                if any(keyword in memory_lower for keyword in other_keywords):
-                    return False  # Different topic, not relevant
-            
-            # If no specific cooking topics found, allow it
-            return True
+            logger.debug(f"Keyword overlap: {overlap_ratio:.3f} - {'RELEVANT' if is_relevant else 'IRRELEVANT'}")
+            return is_relevant
             
         except Exception as e:
             logger.error(f"Error in topic relevance check: {e}", exc_info=True)
@@ -287,7 +413,8 @@ class CortexChatBot:
         self,
         session_id: str,
         query: Optional[str] = None,
-        limit: int = None
+        limit: int = None,
+        topic_filter: Optional[str] = None
     ) -> List[Dict[str, str]]:
         """
         Recall conversation context from Cortex memory with smart filtering.
@@ -308,56 +435,153 @@ class CortexChatBot:
             if not self.use_cortex or self.memory is None:
                 # Fallback: return from simple storage
                 messages = self.sessions.get(session_id, [])
+                # Filter by topic if specified
+                if topic_filter:
+                    # Simple keyword filtering for fallback
+                    messages = [msg for msg in messages if isinstance(msg, dict) and 
+                               self._detect_topic(msg.get('content', '')) == topic_filter]
                 return messages[-limit:]
             
-            # HYBRID APPROACH: Combine semantic search + recency
+            # Get topic-specific memory IDs if topic filtering is enabled
+            topic_memory_ids = None
+            if topic_filter and session_id in self.topic_contexts:
+                topic_memory_ids = self.topic_contexts[session_id].get(topic_filter, [])
+                if topic_memory_ids:
+                    logger.info(f"📚 Using {len(topic_memory_ids)} memories from topic '{topic_filter}'")
+            
+            # HYBRID APPROACH: Combine semantic search + recency (within topic)
             if query:
-                # Step 1: Get recent messages (baseline context)
-                memory_ids = self.sessions.get(session_id, [])
-                recent_count = min(5, limit)  # Last 5 messages as baseline
+                # Step 1: Get recent messages - ALWAYS include last N messages from session for continuity
+                # This ensures conversation flow even when topic changes
+                all_session_memory_ids = self.sessions.get(session_id, [])
+                recent_count = min(limit, 10)  # Get last 10 messages as baseline
                 recent_memories = []
-                for mem_id in memory_ids[-recent_count:]:
-                    mem = self.memory.get_memory(mem_id)
-                    if mem and not mem.is_expired():
-                        recent_memories.append(mem)
                 
-                # Step 2: Semantic search for highly relevant older context
-                # Use VERY HIGH similarity threshold (0.85 = 85% similar) to be extremely selective
-                semantic_results = self.memory.recall(
-                    query=query,
-                    memory_type=MemoryType.SHORT_TERM,
-                    limit=limit * 2,  # Search wider, filter later
-                    min_similarity=0.85,  # VERY HIGH threshold: only extremely relevant matches
-                    tags=[f"session:{session_id}", "chat"]
-                )
+                # First, get recent messages from current topic if available
+                if topic_memory_ids and len(topic_memory_ids) > 0:
+                    # Get last messages from current topic (up to recent_count)
+                    topic_recent = topic_memory_ids[-min(recent_count, len(topic_memory_ids)):]
+                    for mem_id in topic_recent:
+                        mem = self.memory.get_memory(mem_id)
+                        if mem and not mem.is_expired():
+                            recent_memories.append(mem)
+                            logger.debug(f"Added recent message from topic '{topic_filter}': {mem.content[:50]}...")
+                
+                # Also include very recent messages from session (last 3) for continuity
+                # This ensures smooth conversation flow even during topic transitions
+                if all_session_memory_ids:
+                    very_recent_count = min(3, len(all_session_memory_ids))
+                    very_recent_ids = all_session_memory_ids[-very_recent_count:]
+                    for mem_id in very_recent_ids:
+                        if mem_id not in [m.id for m in recent_memories]:
+                            mem = self.memory.get_memory(mem_id)
+                            if mem and not mem.is_expired():
+                                # Only add if it's the same topic or very recent (within last 3)
+                                mem_topic = self._detect_topic(mem.content)
+                                if not topic_filter or mem_topic == topic_filter or len(all_session_memory_ids) - all_session_memory_ids.index(mem_id) <= 2:
+                                    recent_memories.append(mem)
+                                    logger.debug(f"Added very recent message for continuity: {mem.content[:50]}...")
+                
+                # Step 2: Semantic search for highly relevant older context (within topic)
+                # Search within topic-specific memories if available
+                search_tags = [f"session:{session_id}", "chat"]
+                if topic_memory_ids:
+                    # Restrict search to topic-specific memories by including their IDs
+                    # We'll filter results to only include topic memories
+                    semantic_results = self.memory.recall(
+                        query=query,
+                        memory_type=MemoryType.SHORT_TERM,
+                        limit=limit * 3,  # Search wider since we'll filter by topic
+                        min_similarity=0.7,  # Moderate threshold
+                        tags=search_tags
+                    )
+                    # Filter to only include results from current topic
+                    semantic_results = [
+                        r for r in semantic_results 
+                        if r.memory.id in topic_memory_ids
+                    ]
+                else:
+                    semantic_results = self.memory.recall(
+                        query=query,
+                        memory_type=MemoryType.SHORT_TERM,
+                        limit=limit * 2,
+                        min_similarity=0.75,
+                        tags=search_tags
+                    )
                 
                 # Step 3: Combine and deduplicate
                 all_memories = {}
                 
-                # Add recent messages (priority)
+                # ALWAYS add recent messages (no filtering) - ensures conversation continuity
                 for mem in recent_memories:
                     all_memories[mem.id] = mem
+                    logger.debug(f"Included recent message: {mem.content[:50]}...")
                 
-                # Add semantic matches if EXTREMELY relevant and not already included
+                # Add semantic matches - filter for topic relevance on older messages
                 for result in semantic_results:
                     mem = result.memory
                     if mem.id not in all_memories:
-                        # Only add if similarity is EXTREMELY high (85%+)
-                        if result.similarity >= 0.85:
-                            # Additional keyword filtering to prevent cross-topic contamination
-                            if self._is_topic_relevant(query, mem.content):
+                        # For semantic matches, check topic relevance and similarity
+                        is_relevant = True
+                        if topic_filter:
+                            # Check if memory is from the current topic
+                            mem_topic = self._detect_topic(mem.content)
+                            is_relevant = mem_topic == topic_filter
+                        
+                        if is_relevant:
+                            # Additional semantic similarity check
+                            if result.similarity >= 0.7:  # Moderate threshold
                                 all_memories[mem.id] = mem
+                                logger.debug(f"Added semantically relevant context: {mem.content[:50]}... (similarity: {result.similarity:.3f})")
+                            else:
+                                logger.debug(f"Filtered out: similarity too low ({result.similarity:.3f})")
+                        else:
+                            logger.debug(f"Filtered out: different topic ({mem.content[:50]}...)")
                 
                 memories = list(all_memories.values())
                 
+                # Sort by timestamp to maintain chronological order
+                try:
+                    memories.sort(key=lambda m: m.created_at if hasattr(m, 'created_at') else m.metadata.get('timestamp', ''))
+                except:
+                    pass
+                
             else:
-                # No query: just get recent messages
-                memory_ids = self.sessions.get(session_id, [])
+                # No query: just get recent messages - prioritize current topic but include recent for continuity
+                all_session_memory_ids = self.sessions.get(session_id, [])
                 memories = []
-                for mem_id in memory_ids[-limit:]:
-                    mem = self.memory.get_memory(mem_id)
-                    if mem and not mem.is_expired():
-                        memories.append(mem)
+                
+                # First, get messages from current topic
+                if topic_memory_ids and len(topic_memory_ids) > 0:
+                    for mem_id in topic_memory_ids[-limit:]:
+                        mem = self.memory.get_memory(mem_id)
+                        if mem and not mem.is_expired():
+                            memories.append(mem)
+                
+                # Also include very recent messages (last 3) from session for continuity
+                if len(memories) < limit and all_session_memory_ids:
+                    very_recent_count = min(3, len(all_session_memory_ids))
+                    very_recent_ids = all_session_memory_ids[-very_recent_count:]
+                    for mem_id in very_recent_ids:
+                        if mem_id not in [m.id for m in memories]:
+                            mem = self.memory.get_memory(mem_id)
+                            if mem and not mem.is_expired():
+                                memories.append(mem)
+                
+                # If still not enough, get more from session
+                if len(memories) < limit and all_session_memory_ids:
+                    for mem_id in all_session_memory_ids[-limit*2:]:
+                        if len(memories) >= limit:
+                            break
+                        if mem_id not in [m.id for m in memories]:
+                            mem = self.memory.get_memory(mem_id)
+                            if mem and not mem.is_expired():
+                                if topic_filter:
+                                    mem_topic = self._detect_topic(mem.content)
+                                    if mem_topic == topic_filter:
+                                        memories.append(mem)
+                                else:
+                                    memories.append(mem)
             
             # Convert memories to message format
             messages = []
@@ -372,8 +596,53 @@ class CortexChatBot:
             # Sort by timestamp (chronological order)
             messages.sort(key=lambda x: x.get("timestamp", ""))
             
-            # Limit to max context
-            return messages[-limit:]
+            # Summarize old messages if we have too many
+            if len(messages) > limit and self.enable_summarization and self.summarizer:
+                try:
+                    # Split into recent (keep full) and old (summarize)
+                    recent_count = min(limit // 2, 3)  # Keep last 3 messages full
+                    old_messages = messages[:-recent_count]
+                    recent_messages = messages[-recent_count:]
+                    
+                    if len(old_messages) > 0:
+                        # Create a conversation summary from old messages
+                        conversation_text = "\n".join([
+                            f"{msg['role'].capitalize()}: {msg['content']}" 
+                            for msg in old_messages
+                        ])
+                        
+                        # Summarize if conversation is long
+                        if len(conversation_text) > 200:
+                            logger.info(f"Summarizing {len(old_messages)} old messages into summary")
+                            summary = self.summarizer(
+                                conversation_text,
+                                max_length=150,
+                                min_length=50,
+                                do_sample=False
+                            )[0]['summary_text']
+                            
+                            # Add summary as a single message
+                            summary_message = {
+                                "role": "system",
+                                "content": f"Previous conversation summary: {summary}",
+                                "timestamp": old_messages[-1].get("timestamp", ""),
+                                "memory_id": "summary"
+                            }
+                            messages = [summary_message] + recent_messages
+                            logger.info(f"Summarized {len(old_messages)} messages, kept {len(recent_messages)} recent")
+                        else:
+                            # Keep all if conversation is short
+                            messages = messages[-limit:]
+                    else:
+                        messages = messages[-limit:]
+                except Exception as e:
+                    logger.warning(f"Failed to summarize context: {e}. Using full context.")
+                    messages = messages[-limit:]
+            else:
+                # Limit to max context
+                messages = messages[-limit:]
+            
+            return messages
             
         except Exception as e:
             logger.error(f"Failed to recall conversation context: {e}", exc_info=True)
@@ -414,38 +683,122 @@ class CortexChatBot:
             if use_answer_cache and self.use_cortex and self.memory:
                 cached_result = self._check_answer_cache(user_message, session_id)
                 if cached_result:
-                    logger.info(f"Using cached answer for similar question in session {session_id}")
+                    logger.info("=" * 80)
+                    logger.info(f"💾 USING CACHED RESPONSE - Session: {session_id}")
+                    logger.info(f"📝 User Message: {user_message}")
+                    logger.info(f"🎯 Cache Similarity: {cached_result.get('cache_similarity', 0):.2%}")
+                    logger.info(f"📥 Cached Response: {cached_result.get('response', '')[:200]}{'...' if len(cached_result.get('response', '')) > 200 else ''}")
+                    logger.info("=" * 80)
+                    # Add prompt info to cached result (None since no LLM call was made)
+                    cached_result['prompt_sent_to_llm'] = None
+                    cached_result['user_message'] = user_message
                     return cached_result
             
+            # Detect topic for current message
+            current_topic = self._detect_topic(user_message)
+            previous_topic = self.session_topics.get(session_id, None)
+            
+            # If topic is generic and we have a previous topic, check if it's a continuation
+            if current_topic == 'general' and previous_topic and previous_topic != 'general':
+                # Check if message seems like a continuation (questions like "can you make a plan", "how about", etc.)
+                continuation_phrases = ['can you', 'how about', 'what about', 'tell me', 'give me', 'make', 'suggest', 'which', 'what']
+                if any(phrase in user_message.lower() for phrase in continuation_phrases):
+                    # Likely a continuation of previous topic
+                    current_topic = previous_topic
+                    logger.info(f"📎 Detected continuation of '{previous_topic}' topic: {user_message[:50]}...")
+                else:
+                    # Might be a new topic, use semantic similarity to check
+                    if self.semantic_model and len(self.sessions.get(session_id, [])) > 0:
+                        # Get last message to check similarity
+                        last_mem_id = self.sessions[session_id][-1]
+                        last_mem = self.memory.get_memory(last_mem_id) if self.memory else None
+                        if last_mem:
+                            import numpy as np
+                            query_emb = self.semantic_model.encode(user_message, convert_to_tensor=False)
+                            last_emb = self.semantic_model.encode(last_mem.content, convert_to_tensor=False)
+                            similarity = np.dot(query_emb, last_emb) / (
+                                np.linalg.norm(query_emb) * np.linalg.norm(last_emb)
+                            )
+                            if similarity > 0.5:  # Moderate similarity threshold
+                                current_topic = previous_topic
+                                logger.info(f"📎 Semantic similarity ({similarity:.3f}) suggests continuation of '{previous_topic}' topic")
+            
+            # Track topic change
+            topic_changed = previous_topic is not None and previous_topic != current_topic and previous_topic != 'general'
+            if topic_changed:
+                logger.info(f"🔄 Topic changed: '{previous_topic}' -> '{current_topic}' (session: {session_id})")
+            elif previous_topic is None:
+                logger.info(f"📌 New topic detected: '{current_topic}' (session: {session_id})")
+            elif current_topic == previous_topic:
+                logger.debug(f"📌 Continuing topic: '{current_topic}' (session: {session_id})")
+            
+            # Update session topic
+            self.session_topics[session_id] = current_topic
+            
+            # Initialize topic context tracking if needed
+            if session_id not in self.topic_contexts:
+                self.topic_contexts[session_id] = {}
+            if current_topic not in self.topic_contexts[session_id]:
+                self.topic_contexts[session_id][current_topic] = []
+            
             # Store user message in memory
-            self._store_message(
+            memory_id = self._store_message(
                 session_id=session_id,
                 role="user",
                 content=user_message,
                 priority=MemoryPriority.MEDIUM
             )
             
+            # Track this message in topic context
+            if memory_id:
+                self.topic_contexts[session_id][current_topic].append(memory_id)
+            
             # Recall conversation context (if enabled)
+            # Focus on current topic but include relevant context from current topic history
             if use_semantic_context:
-                # Use semantic search to find relevant context
+                # Get context from current topic
                 context_messages = self._recall_conversation_context(
                     session_id=session_id,
                     query=user_message,
-                    limit=self.max_context_messages
+                    limit=self.max_context_messages,
+                    topic_filter=current_topic  # Only get context from current topic
                 )
             else:
-                # Get recent messages only
+                # Get recent messages from current topic only
                 context_messages = self._recall_conversation_context(
                     session_id=session_id,
-                    limit=self.max_context_messages
+                    limit=self.max_context_messages,
+                    topic_filter=current_topic  # Only get context from current topic
                 )
             
             # Build prompt with context
             prompt = self._build_prompt(context_messages, user_message)
             
+            # Log what we're sending to the LLM
+            logger.info("=" * 80)
+            logger.info(f"🤖 LLM REQUEST - Session: {session_id}")
+            logger.info(f"📝 User Message: {user_message}")
+            logger.info(f"🏷️  Current Topic: {current_topic}")
+            if topic_changed:
+                logger.info(f"🔄 Topic Changed: {previous_topic} -> {current_topic}")
+            logger.info(f"📚 Context Messages Used: {len(context_messages)}")
+            if context_messages:
+                logger.info("📋 Context History (showing ALL):")
+                for i, msg in enumerate(context_messages, 1):
+                    msg_role = msg.get('role', 'unknown')
+                    msg_content = msg.get('content', '')
+                    msg_topic = self._detect_topic(msg_content) if msg_content else 'unknown'
+                    logger.info(f"   {i}. [{msg_role}] ({msg_topic}): {msg_content[:80]}{'...' if len(msg_content) > 80 else ''}")
+            else:
+                logger.warning("⚠️  No context messages found!")
+            logger.info("-" * 80)
+            logger.info("📤 FULL PROMPT SENT TO LLM:")
+            logger.info(prompt)
+            logger.info("=" * 80)
+            
             # Generate response (if fresh_llm is enabled)
             if use_fresh_llm:
-                logger.info(f"Generating response for session {session_id}")
+                logger.info(f"🔄 Generating response for session {session_id}")
                 response = self.model(
                     prompt,
                     max_tokens=512,
@@ -455,17 +808,26 @@ class CortexChatBot:
                     echo=False
                 )
                 bot_response = response['choices'][0]['text'].strip()
+                logger.info("✅ LLM RESPONSE RECEIVED:")
+                logger.info(f"📥 Response: {bot_response[:200]}{'...' if len(bot_response) > 200 else ''}")
             else:
                 # Return a simple response when LLM is disabled
                 bot_response = "I'm currently in a limited mode. Please enable the LLM to get a full response."
             
             # Store bot response in memory
-            self._store_message(
+            response_memory_id = self._store_message(
                 session_id=session_id,
                 role="assistant",
                 content=bot_response,
                 priority=MemoryPriority.MEDIUM
             )
+            
+            # Track response in topic context
+            if response_memory_id and session_id in self.topic_contexts:
+                current_topic = self.session_topics.get(session_id, 'general')
+                if current_topic not in self.topic_contexts[session_id]:
+                    self.topic_contexts[session_id][current_topic] = []
+                self.topic_contexts[session_id][current_topic].append(response_memory_id)
             
             logger.info(f"Response generated successfully for session {session_id}")
             
@@ -474,7 +836,11 @@ class CortexChatBot:
                 "response": bot_response,
                 "context_used": len(context_messages),
                 "context_messages": context_messages,
-                "source": "cortex_memory" if self.use_cortex and context_messages else "no_context"
+                "source": "cortex_memory" if self.use_cortex and context_messages else "no_context",
+                "prompt_sent_to_llm": prompt if use_fresh_llm else None,
+                "user_message": user_message,
+                "topic": current_topic,
+                "topic_changed": topic_changed
             }
             
         except Exception as e:

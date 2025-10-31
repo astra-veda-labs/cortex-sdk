@@ -382,6 +382,72 @@
             color: rgba(255, 255, 255, 0.8);
             font-weight: 500;
         }
+        
+        .prompt-display {
+            margin-top: 12px;
+            padding: 12px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            border: 1px solid #dee2e6;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        
+        .prompt-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            cursor: pointer;
+            user-select: none;
+            font-size: 12px;
+            font-weight: 600;
+            color: #495057;
+            margin-bottom: 8px;
+            padding: 8px;
+            background: #e9ecef;
+            border-radius: 6px;
+            transition: background 0.2s;
+        }
+        
+        .prompt-header:hover {
+            background: #dee2e6;
+        }
+        
+        .prompt-content {
+            font-family: 'Courier New', monospace;
+            font-size: 11px;
+            line-height: 1.6;
+            color: #212529;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            padding: 10px;
+            background: white;
+            border-radius: 4px;
+            border: 1px solid #ced4da;
+        }
+        
+        .prompt-toggle {
+            font-size: 14px;
+            transition: transform 0.2s;
+        }
+        
+        .prompt-toggle.collapsed {
+            transform: rotate(-90deg);
+        }
+        
+        .prompt-label {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        
+        .no-prompt-message {
+            font-size: 11px;
+            color: #6c757d;
+            font-style: italic;
+            padding: 8px;
+            text-align: center;
+        }
     </style>
 </head>
 <body>
@@ -563,6 +629,13 @@
                     detailsDiv.textContent = 'No LLM call needed - retrieved from memory';
                     contextDiv.appendChild(detailsDiv);
                     
+                    // Show that no prompt was sent
+                    const noPromptDiv = document.createElement('div');
+                    noPromptDiv.className = 'prompt-display';
+                    noPromptDiv.style.marginTop = '8px';
+                    noPromptDiv.innerHTML = '<div class="no-prompt-message">⚡ No prompt sent - using cached response (no LLM call made)</div>';
+                    bubbleDiv.appendChild(noPromptDiv);
+                    
                 } else if (contextUsed > 0) {
                     // MEMORY CONTEXT - LLM with context
                     contextDiv.className = 'context-indicator memory';
@@ -589,6 +662,45 @@
                 }
                 
                 bubbleDiv.appendChild(contextDiv);
+                
+                // Add prompt display for LLM calls
+                if (responseData.prompt_sent_to_llm) {
+                    const promptDiv = document.createElement('div');
+                    promptDiv.className = 'prompt-display';
+                    promptDiv.id = 'prompt-' + Date.now();
+                    
+                    const promptHeader = document.createElement('div');
+                    promptHeader.className = 'prompt-header';
+                    promptHeader.innerHTML = `
+                        <div class="prompt-label">
+                            <span class="prompt-toggle">▼</span>
+                            <span>📤 Prompt Sent to LLM</span>
+                        </div>
+                        <span style="font-size: 10px; color: #6c757d;">Click to expand/collapse</span>
+                    `;
+                    
+                    const promptContent = document.createElement('div');
+                    promptContent.className = 'prompt-content';
+                    promptContent.style.display = 'block';
+                    promptContent.textContent = responseData.prompt_sent_to_llm;
+                    
+                    promptHeader.onclick = function() {
+                        const isHidden = promptContent.style.display === 'none';
+                        promptContent.style.display = isHidden ? 'block' : 'none';
+                        const toggle = promptHeader.querySelector('.prompt-toggle');
+                        toggle.classList.toggle('collapsed');
+                    };
+                    
+                    promptDiv.appendChild(promptHeader);
+                    promptDiv.appendChild(promptContent);
+                    bubbleDiv.appendChild(promptDiv);
+                } else if (responseData.cached === false && responseData.memory_source !== 'cached_answer') {
+                    // Show message if no prompt (but LLM was called)
+                    const noPromptDiv = document.createElement('div');
+                    noPromptDiv.className = 'prompt-display';
+                    noPromptDiv.innerHTML = '<div class="no-prompt-message">💭 LLM call made, but prompt not available</div>';
+                    bubbleDiv.appendChild(noPromptDiv);
+                }
             }
             
             messageDiv.appendChild(bubbleDiv);

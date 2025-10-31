@@ -1,0 +1,24 @@
+services:
+  cortex-sdk:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cortex-sdk
+    volumes:
+      # Persist ChromaDB data
+      - ./chroma_db:/app/chroma_db
+      # Mount config file
+      - ./cortex_config.yaml:/app/cortex_config.yaml
+      # Optional: mount your code for development
+      - ./cortex:/app/cortex
+      # Mount Chat_bot directory
+      - ./Chat_bot:/app/Chat_bot
+    environment:
+      - PYTHONUNBUFFERED=1
+    ports:
+      - "5001:5001"
+    # Run the chatbot
+    command: bash -c "cd /app/Chat_bot && python start_chatbot.py"
+    stdin_open: true
+    tty: true
+

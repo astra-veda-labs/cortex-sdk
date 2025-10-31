@@ -62,6 +62,3 @@ exclude = ["Chat_bot*", "docs*", "tests*"]
 
 [tool.setuptools.package-data]
 cortex = ["config/*.json", "backends/*.py"]
-
-[tool.setuptools.exclude-package-data]
-"" = ["Chat_bot/*", "docs/*", "tests/*"]

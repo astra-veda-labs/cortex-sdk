@@ -126,3 +126,4 @@ def reset_yaml_config():
     """Reset global configuration (for testing)"""
     global _yaml_config
     _yaml_config = None
+
